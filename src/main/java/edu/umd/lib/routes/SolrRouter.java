@@ -8,6 +8,8 @@ import org.apache.camel.LoggingLevel;
 import org.apache.camel.Predicate;
 import org.apache.camel.builder.RouteBuilder;
 
+import edu.umd.lib.process.Action1Processor;
+import edu.umd.lib.process.Action2Processor;
 import edu.umd.lib.process.DriveDeleteProcessor;
 import edu.umd.lib.process.DriveDirRenameProcessor;
 import edu.umd.lib.process.DriveDownloadProcessor;
@@ -18,6 +20,8 @@ import edu.umd.lib.process.DriveMoveDirProcessor;
 import edu.umd.lib.process.DrivePathUpdateProcessor;
 import edu.umd.lib.process.DrivePollEventProcessor;
 import edu.umd.lib.process.ExceptionProcessor;
+import edu.umd.lib.process.SolrAction1Processor;
+import edu.umd.lib.process.SolrAction2Processor;
 
 /**
  * SolrRouter Contains all Route Configuration for Drive and Solr Integration
@@ -51,6 +55,8 @@ public class SolrRouter extends RouteBuilder {
   Predicate update_paths = header("action").isEqualTo("update_paths");
   Predicate movefile = header("action").isEqualTo("move_file");
   Predicate moveDir = header("action").isEqualTo("move_dir");
+  Predicate action1 = header("action").isEqualTo("action1");
+  Predicate action2 = header("action").isEqualTo("action2");
 
   @Override
   public void configure() throws Exception {
@@ -80,6 +86,11 @@ public class SolrRouter extends RouteBuilder {
 
     from("timer://runOnce?repeatCount=0&delay=5000&period=" + pollInterval)
         .to("direct:default.pollDrive");
+
+    from("timer://runOnce?repeatCount=0&delay=5000&period=1s")
+        .log("Quick timer")
+        .process(new MessageDumper())
+        .log("Done Quick timer");
 
     /**
      * Parse Request from Drive Web hooks. Each Parameter from web hook is set
@@ -116,6 +127,10 @@ public class SolrRouter extends RouteBuilder {
         .to("direct:movefile.filesys")
         .when(moveDir)
         .to("direct:movedir.filesys")
+        .when(action1)
+        .to("direct:action1")
+        .when(action2)
+        .to("direct:action2")
         .otherwise()
         .to("direct:default");
 
@@ -128,6 +143,32 @@ public class SolrRouter extends RouteBuilder {
         .log("Request received to download a file from the Drive.")
         .process(new DriveDownloadProcessor(config))
         .to("direct:update.solr");
+
+    from("direct:action1")
+        .routeId("Action1")
+        .log("  **** Action1 Push")
+        .process(new Action1Processor(config))
+        .log("  **** Action1 Pop")
+        .to("direct:solr_action1");
+
+    from("direct:action2")
+        .routeId("Action2")
+        .log("  **** Action2 Push")
+        .process(new Action2Processor(config))
+        .log("  **** Action2 Pop")
+        .to("direct:solr_action2");
+
+    from("direct:solr_action1")
+        .routeId("SolrAction1")
+        .log(LoggingLevel.INFO, "  **** Solr Action1 Push")
+        .process(new SolrAction1Processor(config))
+        .log(LoggingLevel.INFO, "  **** Solr Action1 Pop");
+
+    from("direct:solr_action2")
+        .routeId("SolrAction2")
+        .log(LoggingLevel.INFO, "  **** Solr Action2 Push")
+        .process(new SolrAction2Processor(config))
+        .log(LoggingLevel.INFO, "  **** Solr Action2 Pop");
 
     /**
      * FileDeleter: receives message with info about a file/dir to delete &
@@ -219,7 +260,7 @@ public class SolrRouter extends RouteBuilder {
         .setHeader(Exchange.CONTENT_TYPE, constant("application/json"))
         .setHeader(Exchange.HTTP_METHOD).simple("POST")
         .setHeader(Exchange.HTTP_QUERY).simple("commitWithin={{solr.commitWithin}}")
-        .to("https4://{{solr.baseUrl}}/update?bridgeEndpoint=true");
+        .to("http4://{{solr.baseUrl}}/update?bridgeEndpoint=true");
 
     /**
      * Connect to Solr and delete the Drive information
@@ -230,7 +271,7 @@ public class SolrRouter extends RouteBuilder {
         .setHeader(Exchange.CONTENT_TYPE, constant("application/json"))
         .setHeader(Exchange.HTTP_METHOD).simple("POST")
         .setHeader(Exchange.HTTP_QUERY).simple("commitWithin={{solr.commitWithin}}")
-        .to("https4://{{solr.baseUrl}}/update?bridgeEndpoint=true");
+        .to("http4://{{solr.baseUrl}}/update?bridgeEndpoint=true");
 
     /***
      * Default Drive Route
@@ -238,6 +279,10 @@ public class SolrRouter extends RouteBuilder {
     from("direct:default.drive")
         .routeId("DefaultDriveListener")
         .log(LoggingLevel.INFO, "Default Action Listener for Drive");
+
+    from("direct:default")
+        .routeId("DefaultListener")
+        .log(LoggingLevel.INFO, "Default Action Listener");
 
     /****
      * Send Email with error message to email address from Configuration file
